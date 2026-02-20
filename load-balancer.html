@@ -1,0 +1,1235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Load Balancing: L4 vs L7 -- Interactive Deep Dive</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3348;
+    --text: #e2e8f0;
+    --text-dim: #8892b0;
+    --accent: #64ffda;
+    --accent2: #7c3aed;
+    --l4: #f59e0b;
+    --l7: #3b82f6;
+    --red: #ef4444;
+    --green: #22c55e;
+    --pink: #ec4899;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* --- NAV --- */
+  .nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: flex; align-items: center; height: 56px;
+    gap: 12px;
+  }
+  .nav-title {
+    font-weight: 700; font-size: 15px;
+    background: linear-gradient(135deg, var(--l4), var(--l7));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .nav-links { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+  .nav-links a {
+    padding: 6px 12px; border-radius: 6px; font-size: 12px;
+    color: var(--text-dim); text-decoration: none; transition: all .2s;
+    white-space: nowrap;
+  }
+  .nav-links a:hover { color: var(--accent); background: var(--surface2); }
+  .progress-bar {
+    position: fixed; top: 56px; left: 0; height: 3px; z-index: 101;
+    background: linear-gradient(90deg, var(--l4), var(--accent), var(--l7));
+    transition: width .3s;
+  }
+
+  /* --- LAYOUT --- */
+  .container { max-width: 900px; margin: 0 auto; padding: 80px 24px 60px; }
+  section { margin-bottom: 64px; scroll-margin-top: 80px; }
+
+  /* --- HERO --- */
+  .hero {
+    text-align: center; padding: 80px 0 40px;
+    background: radial-gradient(ellipse at center, rgba(100,255,218,0.05) 0%, transparent 70%);
+  }
+  .hero h1 {
+    font-size: clamp(28px, 5vw, 48px); font-weight: 800;
+    background: linear-gradient(135deg, var(--l4), var(--accent), var(--l7));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 16px;
+  }
+  .hero p { color: var(--text-dim); font-size: 18px; max-width: 600px; margin: 0 auto; }
+  .hero-analogy {
+    margin-top: 32px; padding: 24px; border-radius: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    font-size: 18px;
+  }
+  .hero-analogy .envelope { font-size: 32px; }
+
+  /* --- HEADINGS --- */
+  h2 {
+    font-size: 28px; font-weight: 700; margin-bottom: 20px;
+    padding-bottom: 8px; border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 20px; font-weight: 600; margin: 24px 0 12px; color: var(--accent); }
+
+  /* --- CARDS --- */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; margin-bottom: 16px;
+  }
+  .card-l4 { border-left: 4px solid var(--l4); }
+  .card-l7 { border-left: 4px solid var(--l7); }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+  }
+  .badge-l4 { background: rgba(245,158,11,0.15); color: var(--l4); }
+  .badge-l7 { background: rgba(59,130,246,0.15); color: var(--l7); }
+
+  /* --- SIMULATOR --- */
+  .sim-container {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; margin: 20px 0;
+  }
+  .sim-controls {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  .sim-btn {
+    padding: 8px 20px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); cursor: pointer;
+    font-size: 13px; font-weight: 600; transition: all .2s;
+  }
+  .sim-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .sim-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .sim-canvas {
+    width: 100%; height: 300px; border-radius: 8px;
+    background: #0d0f16; position: relative; overflow: hidden;
+  }
+
+  /* --- PACKET ANIMATION --- */
+  .node {
+    position: absolute; border-radius: 8px; padding: 8px 14px;
+    font-size: 12px; font-weight: 700; text-align: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .node-client { background: rgba(100,255,218,0.15); border: 1px solid var(--accent); color: var(--accent); }
+  .node-lb { background: rgba(124,58,237,0.2); border: 1px solid var(--accent2); color: #a78bfa; }
+  .node-server { background: rgba(59,130,246,0.15); border: 1px solid var(--l7); color: var(--l7); }
+  .node-label { font-size: 9px; opacity: 0.6; margin-top: 2px; }
+
+  .packet {
+    position: absolute; width: 12px; height: 12px; border-radius: 50%;
+    transition: none;
+  }
+  .packet-request { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .packet-response { background: var(--pink); box-shadow: 0 0 8px var(--pink); }
+
+  .packet-info {
+    position: absolute; bottom: 8px; left: 12px; right: 12px;
+    background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 6px;
+    font-size: 11px; font-family: 'Courier New', monospace;
+    color: var(--accent); white-space: pre; overflow-x: auto;
+  }
+
+  /* --- COMPARISON TABLE --- */
+  .comp-table {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    border-radius: 12px; overflow: hidden; margin: 20px 0;
+  }
+  .comp-table th {
+    background: var(--surface2); padding: 12px 16px;
+    text-align: left; font-size: 13px; font-weight: 600;
+  }
+  .comp-table td {
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    font-size: 13px; background: var(--surface);
+  }
+  .comp-table tr:hover td { background: var(--surface2); }
+  .comp-table .col-l4 { color: var(--l4); }
+  .comp-table .col-l7 { color: var(--l7); }
+
+  /* --- ALGORITHM VIZ --- */
+  .algo-viz {
+    display: flex; gap: 16px; align-items: flex-start;
+    flex-wrap: wrap; margin: 16px 0;
+  }
+  .server-box {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    min-width: 100px; transition: all .3s;
+  }
+  .server-box.highlight {
+    border-color: var(--accent); box-shadow: 0 0 16px rgba(100,255,218,0.2);
+    transform: scale(1.05);
+  }
+  .server-name { font-weight: 700; font-size: 14px; }
+  .server-conns { font-size: 24px; font-weight: 800; margin: 8px 0; }
+  .server-bar {
+    height: 6px; background: var(--border); border-radius: 3px;
+    overflow: hidden; margin-top: 6px;
+  }
+  .server-bar-fill {
+    height: 100%; border-radius: 3px; transition: width .5s;
+    background: linear-gradient(90deg, var(--green), var(--l4));
+  }
+
+  /* --- QUIZ --- */
+  .quiz-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; margin: 16px 0;
+  }
+  .quiz-q {
+    font-size: 16px; font-weight: 600; margin-bottom: 16px;
+    padding-left: 12px; border-left: 3px solid var(--accent2);
+  }
+  .quiz-options { display: flex; flex-direction: column; gap: 8px; }
+  .quiz-opt {
+    padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface2); cursor: pointer; font-size: 14px;
+    transition: all .2s; text-align: left;
+    color: var(--text);
+  }
+  .quiz-opt:hover { border-color: var(--accent); }
+  .quiz-opt.correct {
+    background: rgba(34,197,94,0.15); border-color: var(--green);
+    color: var(--green);
+  }
+  .quiz-opt.wrong {
+    background: rgba(239,68,68,0.15); border-color: var(--red);
+    color: var(--red);
+  }
+  .quiz-opt.disabled { pointer-events: none; }
+  .quiz-explanation {
+    margin-top: 12px; padding: 12px 16px; border-radius: 8px;
+    background: rgba(100,255,218,0.05); border: 1px solid rgba(100,255,218,0.2);
+    font-size: 13px; display: none;
+  }
+  .quiz-score-bar {
+    display: flex; align-items: center; gap: 12px;
+    margin: 20px 0; padding: 16px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .score-num { font-size: 32px; font-weight: 800; color: var(--accent); }
+  .score-label { font-size: 13px; color: var(--text-dim); }
+
+  /* --- TABS --- */
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap; }
+  .tab-btn {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-dim); cursor: pointer;
+    font-size: 13px; font-weight: 600; transition: all .2s;
+  }
+  .tab-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* --- SCENARIO BUILDER --- */
+  .scenario-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 12px; margin: 16px 0;
+  }
+  .scenario-card {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; cursor: pointer; transition: all .3s;
+  }
+  .scenario-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .scenario-card.selected { border-color: var(--accent); background: rgba(100,255,218,0.05); }
+  .scenario-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .scenario-desc { font-size: 12px; color: var(--text-dim); }
+  .scenario-answer {
+    margin-top: 16px; padding: 16px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    display: none;
+  }
+  .scenario-answer.visible { display: block; }
+
+  /* --- ARCHITECTURE DIAGRAM --- */
+  .arch-svg { width: 100%; max-height: 400px; margin: 16px 0; }
+  .arch-label {
+    font-size: 11px; fill: var(--text-dim);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }
+
+  /* --- GOTCHA ACCORDION --- */
+  .gotcha {
+    border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 8px; overflow: hidden;
+  }
+  .gotcha-header {
+    padding: 14px 18px; background: var(--surface);
+    cursor: pointer; display: flex; align-items: center;
+    justify-content: space-between; font-weight: 600; font-size: 14px;
+    transition: background .2s;
+  }
+  .gotcha-header:hover { background: var(--surface2); }
+  .gotcha-arrow { transition: transform .3s; font-size: 12px; }
+  .gotcha.open .gotcha-arrow { transform: rotate(180deg); }
+  .gotcha-body {
+    padding: 0 18px; max-height: 0; overflow: hidden;
+    transition: max-height .4s, padding .4s;
+    font-size: 14px; color: var(--text-dim); line-height: 1.8;
+  }
+  .gotcha.open .gotcha-body { max-height: 500px; padding: 0 18px 18px; }
+  .fix-tag {
+    display: inline-block; background: rgba(34,197,94,0.15); color: var(--green);
+    padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 700;
+  }
+
+  /* --- FLASHCARD --- */
+  .flashcard-area { perspective: 800px; margin: 16px 0; }
+  .flashcard {
+    width: 100%; min-height: 180px; position: relative;
+    cursor: pointer; transform-style: preserve-3d;
+    transition: transform .6s;
+  }
+  .flashcard.flipped { transform: rotateY(180deg); }
+  .flashcard-face {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    backface-visibility: hidden; border-radius: 12px; padding: 24px;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center;
+  }
+  .flashcard-front {
+    background: linear-gradient(135deg, var(--surface), var(--surface2));
+    border: 1px solid var(--border);
+  }
+  .flashcard-back {
+    background: linear-gradient(135deg, rgba(100,255,218,0.08), var(--surface));
+    border: 1px solid rgba(100,255,218,0.3);
+    transform: rotateY(180deg);
+    color: var(--accent);
+  }
+  .flashcard-hint { font-size: 11px; color: var(--text-dim); margin-top: 12px; }
+  .flashcard-nav { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+
+  /* --- CODE BLOCK --- */
+  .code-block {
+    background: #0d0f16; border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin: 12px 0;
+    font-family: 'Courier New', monospace; font-size: 13px;
+    overflow-x: auto; line-height: 1.6; color: var(--text-dim);
+  }
+  .code-block .hl-key { color: var(--accent); }
+  .code-block .hl-str { color: var(--l4); }
+  .code-block .hl-cmt { color: #4a5568; }
+  .code-block .hl-val { color: var(--pink); }
+
+  /* --- MISC --- */
+  .tip-box {
+    padding: 16px 20px; border-radius: 8px; margin: 16px 0;
+    background: rgba(124,58,237,0.1); border: 1px solid rgba(124,58,237,0.3);
+    font-size: 14px;
+  }
+  .tip-box strong { color: var(--accent2); }
+  .key-insight {
+    padding: 16px 20px; border-radius: 8px; margin: 16px 0;
+    background: rgba(100,255,218,0.06); border: 1px solid rgba(100,255,218,0.2);
+    font-size: 14px;
+  }
+  .key-insight strong { color: var(--accent); }
+
+  p { margin-bottom: 12px; }
+  ul { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 6px; font-size: 14px; }
+  strong { color: var(--text); }
+
+  @media (max-width: 600px) {
+    .nav-links { display: none; }
+    .sim-canvas { height: 240px; }
+    .hero { padding: 40px 0 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NAVIGATION -->
+<nav class="nav">
+  <span class="nav-title">LB Deep Dive</span>
+  <div class="nav-links">
+    <a href="#why">Why</a>
+    <a href="#l4">L4</a>
+    <a href="#l7">L7</a>
+    <a href="#sim">Simulator</a>
+    <a href="#algo">Algorithms</a>
+    <a href="#compare">Compare</a>
+    <a href="#arch">Architecture</a>
+    <a href="#gotchas">Gotchas</a>
+    <a href="#quiz">Quiz</a>
+    <a href="#flash">Flashcards</a>
+  </div>
+</nav>
+<div class="progress-bar" id="progressBar" style="width:0%"></div>
+
+<div class="container">
+
+<!-- HERO -->
+<section class="hero" id="why">
+  <h1>Load Balancing: L4 vs L7</h1>
+  <p>The complete interactive deep dive. Simulate traffic, test algorithms, and quiz yourself.</p>
+  <div class="hero-analogy">
+    <div class="envelope">&#9993; vs &#128196;</div>
+    <p style="margin-top: 12px;"><strong style="color:var(--l4)">L4</strong> sees the envelope (IP + port). <strong style="color:var(--l7)">L7</strong> opens it and reads the letter (URL, headers, cookies).</p>
+  </div>
+</section>
+
+<!-- WHY LOAD BALANCERS -->
+<section>
+  <h2>The Problem: Why Load Balancers Exist</h2>
+  <p>Pine Labs processes millions of payment transactions daily. One server handles ~5,000 req/sec. But traffic arrives in <strong>bursts</strong> -- lunch hour, evening shopping, Diwali sales might spike 20x.</p>
+
+  <div class="card">
+    <p><strong>The core question:</strong> You have 10 servers. A payment request arrives. How does it know which server to go to?</p>
+    <p>That's the load balancer's job -- sit in front of your servers and distribute requests across them.</p>
+  </div>
+
+  <h3>The OSI Model (Only What You Need)</h3>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+    <div class="card card-l4">
+      <span class="badge badge-l4">Layer 4 -- Transport</span>
+      <p style="margin-top:8px">TCP / UDP</p>
+      <p><strong>Knows:</strong> Source IP, Dest IP, Source Port, Dest Port</p>
+      <p><strong>Does NOT know:</strong> URL, headers, cookies, body</p>
+    </div>
+    <div class="card card-l7">
+      <span class="badge badge-l7">Layer 7 -- Application</span>
+      <p style="margin-top:8px">HTTP / HTTPS / gRPC</p>
+      <p><strong>Knows:</strong> Everything L4 knows <em>plus</em> full HTTP request</p>
+      <p><strong>Can see:</strong> URL path, headers, cookies, method, body</p>
+    </div>
+  </div>
+</section>
+
+<!-- L4 SECTION -->
+<section id="l4">
+  <h2><span style="color:var(--l4)">Layer 4</span> Load Balancing: The Fast, Dumb Bouncer</h2>
+
+  <p>An L4 LB looks at exactly <strong>4 things</strong> from the TCP header:</p>
+  <div class="algo-viz">
+    <div class="server-box"><div class="server-name" style="color:var(--l4)">Src IP</div></div>
+    <div class="server-box"><div class="server-name" style="color:var(--l4)">Dst IP</div></div>
+    <div class="server-box"><div class="server-name" style="color:var(--l4)">Src Port</div></div>
+    <div class="server-box"><div class="server-name" style="color:var(--l4)">Dst Port</div></div>
+  </div>
+  <p>It forwards the <strong>entire TCP connection</strong> to a backend. It never looks inside the packets.</p>
+
+  <h3>How Packets Move: Three Methods</h3>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab('l4mech', 0, this)">NAT</button>
+    <button class="tab-btn" onclick="showTab('l4mech', 1, this)">DSR</button>
+    <button class="tab-btn" onclick="showTab('l4mech', 2, this)">IP Tunnel</button>
+  </div>
+  <div class="tab-content l4mech active">
+    <div class="card card-l4">
+      <strong>NAT (Network Address Translation) -- Most Common</strong>
+      <div class="code-block"><span class="hl-key">Client</span> (1.2.3.4:50000) <span class="hl-str">--&gt;</span> <span class="hl-val">LB</span> (10.0.0.1:80) <span class="hl-str">--&gt;</span> <span class="hl-key">Backend</span> (10.0.0.5:8080)
+<span class="hl-cmt">// LB rewrites destination IP/port to backend</span>
+<span class="hl-cmt">// Response comes back through LB (rewrites source back)</span>
+<span class="hl-cmt">// Client thinks it talked to LB the whole time</span></div>
+      <p>Both request AND response flow through the LB. LB must handle all return traffic.</p>
+    </div>
+  </div>
+  <div class="tab-content l4mech">
+    <div class="card card-l4">
+      <strong>DSR (Direct Server Return) -- High Performance</strong>
+      <div class="code-block"><span class="hl-key">Client</span> <span class="hl-str">--&gt;</span> <span class="hl-val">LB</span> <span class="hl-str">--&gt;</span> <span class="hl-key">Backend</span>
+<span class="hl-key">Backend</span> <span class="hl-str">--&gt;</span> <span class="hl-key">Client</span>  <span class="hl-cmt">// DIRECTLY, bypasses LB!</span>
+<span class="hl-cmt">// LB only modifies MAC address, not IP</span>
+<span class="hl-cmt">// Responses are 10-100x bigger than requests</span>
+<span class="hl-cmt">// Massive bandwidth savings on LB</span></div>
+      <p>Used by Facebook (Katran), CDNs, gaming servers, video streaming.</p>
+    </div>
+  </div>
+  <div class="tab-content l4mech">
+    <div class="card card-l4">
+      <strong>IP Tunneling (IP-in-IP)</strong>
+      <div class="code-block"><span class="hl-cmt">// LB encapsulates packet inside a new IP packet</span>
+<span class="hl-cmt">// Backend decapsulates and processes</span>
+<span class="hl-cmt">// Response goes directly to client (like DSR)</span>
+<span class="hl-cmt">// Works across different network subnets (DSR can't)</span></div>
+      <p>Used by Google's Maglev load balancer for cross-datacenter LB.</p>
+    </div>
+  </div>
+
+  <h3>Real-World L4 Load Balancers</h3>
+  <ul>
+    <li><strong>Linux IPVS:</strong> Built into kernel. Used by Kubernetes kube-proxy.</li>
+    <li><strong>HAProxy (TCP mode):</strong> Can run as both L4 and L7.</li>
+    <li><strong>AWS NLB:</strong> Managed L4 LB. Millions req/sec. Static IP.</li>
+    <li><strong>Google Maglev:</strong> Custom L4 LB with consistent hashing.</li>
+    <li><strong>Facebook Katran:</strong> Open-source, XDP-based kernel-bypass.</li>
+  </ul>
+
+  <h3>L4 Strengths & Weaknesses</h3>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+    <div class="card" style="border-left: 3px solid var(--green)">
+      <strong style="color:var(--green)">Strengths</strong>
+      <ul style="margin-top:8px">
+        <li>Extremely fast (microseconds)</li>
+        <li>Protocol agnostic (any TCP/UDP)</li>
+        <li>Low resource usage</li>
+        <li>Supports DSR</li>
+        <li>Simple to operate</li>
+      </ul>
+    </div>
+    <div class="card" style="border-left: 3px solid var(--red)">
+      <strong style="color:var(--red)">Weaknesses</strong>
+      <ul style="margin-top:8px">
+        <li>No content-based routing</li>
+        <li>No SSL termination</li>
+        <li>Dumb health checks (port open?)</li>
+        <li>No request modification</li>
+        <li>Sticky sessions by IP only</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- L7 SECTION -->
+<section id="l7">
+  <h2><span style="color:var(--l7)">Layer 7</span> Load Balancing: The Smart Traffic Controller</h2>
+
+  <p>L7 <strong>terminates</strong> the client's TCP connection, reads the full HTTP request, makes a routing decision, then opens a <strong>new</strong> connection to the backend.</p>
+
+  <div class="key-insight">
+    <strong>Key difference:</strong> L7 maintains <strong>TWO</strong> connections (client-to-LB and LB-to-backend). L4 just forwards packets on a <strong>single</strong> connection.
+  </div>
+
+  <h3>The 7 Superpowers of L7</h3>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab('l7feat', 0, this)">Routing</button>
+    <button class="tab-btn" onclick="showTab('l7feat', 1, this)">SSL</button>
+    <button class="tab-btn" onclick="showTab('l7feat', 2, this)">Modify</button>
+    <button class="tab-btn" onclick="showTab('l7feat', 3, this)">Health</button>
+  </div>
+  <div class="tab-content l7feat active">
+    <div class="card card-l7">
+      <strong>1. Content-Based Routing (Killer Feature)</strong>
+      <div class="code-block"><span class="hl-cmt">// URL path routing</span>
+<span class="hl-str">/api/payments/*</span>    <span class="hl-str">--&gt;</span>  <span class="hl-key">payment-service</span>
+<span class="hl-str">/api/merchants/*</span>   <span class="hl-str">--&gt;</span>  <span class="hl-key">merchant-service</span>
+<span class="hl-str">/api/reports/*</span>     <span class="hl-str">--&gt;</span>  <span class="hl-key">analytics-service</span>
+
+<span class="hl-cmt">// Header-based routing</span>
+<span class="hl-val">X-API-Version: v2</span>  <span class="hl-str">--&gt;</span>  <span class="hl-key">v2-backend</span>
+
+<span class="hl-cmt">// Method-based routing</span>
+<span class="hl-val">GET</span>  /api/products  <span class="hl-str">--&gt;</span>  <span class="hl-key">read-replica</span>
+<span class="hl-val">POST</span> /api/products  <span class="hl-str">--&gt;</span>  <span class="hl-key">primary-write</span></div>
+    </div>
+  </div>
+  <div class="tab-content l7feat">
+    <div class="card card-l7">
+      <strong>2. SSL/TLS Termination</strong>
+      <div class="code-block"><span class="hl-key">Client</span> <span class="hl-str">---HTTPS---&gt;</span> <span class="hl-val">L7 LB</span> <span class="hl-str">---HTTP---&gt;</span> <span class="hl-key">Backend</span>
+<span class="hl-cmt">// LB holds the SSL certificate</span>
+<span class="hl-cmt">// Decrypts inbound, forwards plaintext</span>
+<span class="hl-cmt">// Backends don't need certificates</span>
+<span class="hl-cmt">// Rotate certs in ONE place, not 50 servers</span></div>
+      <div class="tip-box" style="margin-top:12px">
+        <strong>Pine Labs context:</strong> PCI-DSS requires encryption in transit. LB terminates external TLS. Optionally re-encrypt (mTLS) internally.
+      </div>
+    </div>
+  </div>
+  <div class="tab-content l7feat">
+    <div class="card card-l7">
+      <strong>3. Request/Response Modification</strong>
+      <div class="code-block"><span class="hl-cmt">// Add tracing headers</span>
+<span class="hl-val">X-Request-ID:</span> <span class="hl-str">uuid-1234</span>
+<span class="hl-val">X-Forwarded-For:</span> <span class="hl-str">client-real-ip</span>
+
+<span class="hl-cmt">// Rewrite URLs</span>
+<span class="hl-str">/v1/old-endpoint</span> <span class="hl-str">--&gt;</span> <span class="hl-key">/v2/new-endpoint</span>
+
+<span class="hl-cmt">// Add security headers to responses</span>
+<span class="hl-val">X-Frame-Options, Content-Security-Policy</span></div>
+    </div>
+  </div>
+  <div class="tab-content l7feat">
+    <div class="card card-l7">
+      <strong>4. Smart Health Checks</strong>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div class="card card-l4" style="font-size:13px">
+          <strong>L4 check:</strong><br>"Can I open TCP to port 8080?" Yes/No
+        </div>
+        <div class="card card-l7" style="font-size:13px">
+          <strong>L7 check:</strong><br>"Does GET /health return 200 with {status:UP}?"
+          <ul style="margin-top:6px; font-size:12px;">
+            <li>Detects zombie processes</li>
+            <li>Detects DB being down</li>
+            <li>Detects maintenance mode</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:24px;">Also: Rate Limiting, Connection Multiplexing, Circuit Breaking</h3>
+  <div class="card card-l7">
+    <p><strong>Rate Limiting:</strong> Per-merchant API throttling. If merchant_123 sends 10K req/sec, LB blocks before it hits your backend.</p>
+    <p><strong>Connection Multiplexing:</strong> 100 clients share 10 backend connections via HTTP/2. Saves backend resources.</p>
+    <p><strong>Circuit Breaking:</strong> If server fails 5 times in 10 seconds, stop sending traffic for 30s. Prevents cascading failures and retry storms.</p>
+  </div>
+
+  <h3>Real-World L7 Load Balancers</h3>
+  <ul>
+    <li><strong>NGINX:</strong> Most popular. ~35% of the internet. Open source.</li>
+    <li><strong>HAProxy (HTTP):</strong> Used by GitHub, Stack Overflow, Reddit.</li>
+    <li><strong>Envoy Proxy:</strong> Built by Lyft. Microservices-native. Used in Istio.</li>
+    <li><strong>AWS ALB:</strong> Managed L7. Path routing, host routing, WebSocket.</li>
+    <li><strong>Traefik:</strong> Popular in Docker/Kubernetes. Auto-discovers services.</li>
+  </ul>
+</section>
+
+<!-- INTERACTIVE SIMULATOR -->
+<section id="sim">
+  <h2>Interactive Simulator</h2>
+  <p>Watch how L4 and L7 handle incoming requests differently.</p>
+
+  <div class="sim-container">
+    <div class="sim-controls">
+      <button class="sim-btn active" id="simL4Btn" onclick="startSim('l4')">L4 Simulation</button>
+      <button class="sim-btn" id="simL7Btn" onclick="startSim('l7')">L7 Simulation</button>
+      <button class="sim-btn" onclick="sendPacket()" style="margin-left:auto; background:var(--accent); color:var(--bg); border-color:var(--accent);">
+        Send Request
+      </button>
+    </div>
+    <div class="sim-canvas" id="simCanvas">
+      <!-- Nodes placed by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ALGORITHM VISUALIZER -->
+<section id="algo">
+  <h2>Algorithm Visualizer</h2>
+  <p>Click "Send Request" to see how each algorithm distributes traffic.</p>
+
+  <div class="sim-container">
+    <div class="sim-controls">
+      <button class="sim-btn active" id="algoRR" onclick="setAlgo('rr', this)">Round Robin</button>
+      <button class="sim-btn" id="algoWRR" onclick="setAlgo('wrr', this)">Weighted RR</button>
+      <button class="sim-btn" id="algoLC" onclick="setAlgo('lc', this)">Least Connections</button>
+      <button class="sim-btn" id="algoHash" onclick="setAlgo('hash', this)">IP Hash</button>
+      <button class="sim-btn" onclick="sendAlgoReq()" style="margin-left:auto; background:var(--accent); color:var(--bg); border-color:var(--accent);">
+        Send Request
+      </button>
+      <button class="sim-btn" onclick="resetAlgo()">Reset</button>
+    </div>
+    <div id="algoViz" class="algo-viz" style="justify-content: center;">
+      <!-- Built by JS -->
+    </div>
+    <div id="algoLog" class="code-block" style="min-height:60px; max-height:150px; overflow-y:auto; font-size:12px;"></div>
+  </div>
+
+  <div class="tip-box">
+    <strong>Interview tip:</strong> Default to <strong>Least Connections</strong>. Use <strong>Consistent Hashing</strong> for caches, <strong>Weighted RR</strong> for heterogeneous servers.
+  </div>
+</section>
+
+<!-- COMPARISON -->
+<section id="compare">
+  <h2>L4 vs L7: Side-by-Side</h2>
+
+  <table class="comp-table">
+    <thead>
+      <tr><th>Feature</th><th class="col-l4">L4 (Transport)</th><th class="col-l7">L7 (Application)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Inspects content</td><td class="col-l4">No</td><td class="col-l7">Yes</td></tr>
+      <tr><td>Routing by</td><td class="col-l4">IP + Port</td><td class="col-l7">URL + Headers + Cookies</td></tr>
+      <tr><td>SSL termination</td><td class="col-l4">No</td><td class="col-l7">Yes</td></tr>
+      <tr><td>Speed</td><td class="col-l4">Microseconds</td><td class="col-l7">Low milliseconds</td></tr>
+      <tr><td>Throughput</td><td class="col-l4">Millions req/sec</td><td class="col-l7">Hundreds of thousands</td></tr>
+      <tr><td>Protocol support</td><td class="col-l4">Any TCP/UDP</td><td class="col-l7">HTTP/gRPC/WebSocket</td></tr>
+      <tr><td>Health checks</td><td class="col-l4">Port open?</td><td class="col-l7">HTTP endpoint healthy?</td></tr>
+      <tr><td>Sticky sessions</td><td class="col-l4">By IP (unreliable)</td><td class="col-l7">By cookie (reliable)</td></tr>
+      <tr><td>Request modification</td><td class="col-l4">No</td><td class="col-l7">Yes</td></tr>
+      <tr><td>Rate limiting</td><td class="col-l4">No</td><td class="col-l7">Per-client/endpoint</td></tr>
+      <tr><td>Cost</td><td class="col-l4">Low</td><td class="col-l7">Higher CPU/memory</td></tr>
+    </tbody>
+  </table>
+
+  <h3>When to Use Which? -- Scenario Builder</h3>
+  <p>Click a scenario to see the recommended choice:</p>
+
+  <div class="scenario-grid" id="scenarioGrid">
+    <!-- Built by JS -->
+  </div>
+  <div class="scenario-answer" id="scenarioAnswer"></div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="arch">
+  <h2>Two-Tier Architecture</h2>
+  <p>Big companies use BOTH. L4 at the front for raw distribution, L7 behind for smart routing.</p>
+
+  <div class="card" style="text-align:center;">
+    <svg viewBox="0 0 600 340" class="arch-svg">
+      <!-- Internet -->
+      <text x="300" y="20" fill="#8892b0" text-anchor="middle" font-size="13" font-weight="700">INTERNET</text>
+      <line x1="300" y1="28" x2="300" y2="55" stroke="#4a5568" stroke-width="2" stroke-dasharray="4"/>
+
+      <!-- L4 -->
+      <rect x="220" y="55" width="160" height="45" rx="8" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="2"/>
+      <text x="300" y="78" fill="#f59e0b" text-anchor="middle" font-size="13" font-weight="700">L4 LB (NLB/IPVS)</text>
+      <text x="300" y="92" fill="#8892b0" text-anchor="middle" font-size="10">millions conn/sec, raw TCP</text>
+
+      <!-- Lines to L7s -->
+      <line x1="260" y1="100" x2="100" y2="145" stroke="#4a5568" stroke-width="1.5"/>
+      <line x1="300" y1="100" x2="300" y2="145" stroke="#4a5568" stroke-width="1.5"/>
+      <line x1="340" y1="100" x2="500" y2="145" stroke="#4a5568" stroke-width="1.5"/>
+
+      <!-- L7 boxes -->
+      <rect x="30" y="145" width="140" height="45" rx="8" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="2"/>
+      <text x="100" y="168" fill="#3b82f6" text-anchor="middle" font-size="12" font-weight="700">L7 LB (NGINX)</text>
+      <text x="100" y="182" fill="#8892b0" text-anchor="middle" font-size="9">SSL + routing</text>
+
+      <rect x="230" y="145" width="140" height="45" rx="8" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="2"/>
+      <text x="300" y="168" fill="#3b82f6" text-anchor="middle" font-size="12" font-weight="700">L7 LB (NGINX)</text>
+      <text x="300" y="182" fill="#8892b0" text-anchor="middle" font-size="9">SSL + routing</text>
+
+      <rect x="430" y="145" width="140" height="45" rx="8" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="2"/>
+      <text x="500" y="168" fill="#3b82f6" text-anchor="middle" font-size="12" font-weight="700">L7 LB (NGINX)</text>
+      <text x="500" y="182" fill="#8892b0" text-anchor="middle" font-size="9">SSL + routing</text>
+
+      <!-- Services -->
+      <line x1="60" y1="190" x2="40" y2="230" stroke="#2e3348" stroke-width="1"/>
+      <line x1="100" y1="190" x2="100" y2="230" stroke="#2e3348" stroke-width="1"/>
+      <line x1="140" y1="190" x2="160" y2="230" stroke="#2e3348" stroke-width="1"/>
+
+      <line x1="260" y1="190" x2="240" y2="230" stroke="#2e3348" stroke-width="1"/>
+      <line x1="300" y1="190" x2="300" y2="230" stroke="#2e3348" stroke-width="1"/>
+      <line x1="340" y1="190" x2="360" y2="230" stroke="#2e3348" stroke-width="1"/>
+
+      <line x1="460" y1="190" x2="440" y2="230" stroke="#2e3348" stroke-width="1"/>
+      <line x1="500" y1="190" x2="500" y2="230" stroke="#2e3348" stroke-width="1"/>
+      <line x1="540" y1="190" x2="560" y2="230" stroke="#2e3348" stroke-width="1"/>
+
+      <!-- Service boxes -->
+      <g fill="rgba(100,255,218,0.1)" stroke="var(--accent)" stroke-width="1">
+        <rect x="15" y="230" width="50" height="30" rx="4"/>
+        <rect x="75" y="230" width="50" height="30" rx="4"/>
+        <rect x="135" y="230" width="50" height="30" rx="4"/>
+        <rect x="215" y="230" width="50" height="30" rx="4"/>
+        <rect x="275" y="230" width="50" height="30" rx="4"/>
+        <rect x="335" y="230" width="50" height="30" rx="4"/>
+        <rect x="415" y="230" width="50" height="30" rx="4"/>
+        <rect x="475" y="230" width="50" height="30" rx="4"/>
+        <rect x="535" y="230" width="50" height="30" rx="4"/>
+      </g>
+      <g fill="#64ffda" font-size="9" text-anchor="middle">
+        <text x="40" y="249">PaySvc</text>
+        <text x="100" y="249">MerSvc</text>
+        <text x="160" y="249">AuthSvc</text>
+        <text x="240" y="249">PaySvc</text>
+        <text x="300" y="249">MerSvc</text>
+        <text x="360" y="249">AuthSvc</text>
+        <text x="440" y="249">PaySvc</text>
+        <text x="500" y="249">MerSvc</text>
+        <text x="560" y="249">AuthSvc</text>
+      </g>
+
+      <!-- Why -->
+      <text x="300" y="290" fill="#8892b0" text-anchor="middle" font-size="11" font-style="italic">L4 gives a single VIP.  L7 does smart routing + SSL.</text>
+      <text x="300" y="308" fill="#8892b0" text-anchor="middle" font-size="11" font-style="italic">If one L7 dies, L4 detects and reroutes. No SPOF.</text>
+    </svg>
+  </div>
+
+  <h3>Pine Labs Payment Architecture</h3>
+  <div class="card card-l7">
+    <div class="code-block"><span class="hl-cmt">Merchant POS Terminal</span>
+        |  <span class="hl-str">(HTTPS)</span>
+        v
+  [<span class="hl-val">L7 Load Balancer</span> -- ALB/NGINX]
+        |
+        |-- <span class="hl-str">/api/v1/authorize</span>  --&gt; <span class="hl-key">Authorization Svc</span> (low latency)
+        |-- <span class="hl-str">/api/v1/capture</span>    --&gt; <span class="hl-key">Settlement Svc</span>
+        |-- <span class="hl-str">/api/v1/refund</span>     --&gt; <span class="hl-key">Refund Svc</span>
+        |-- <span class="hl-str">/api/v1/status</span>     --&gt; <span class="hl-key">Read-replica Query Svc</span>
+        |
+  Internal: [<span class="hl-val">L4 LB</span> for Redis]  [<span class="hl-val">L4 LB</span> for PostgreSQL]</div>
+  </div>
+</section>
+
+<!-- GOTCHAS -->
+<section id="gotchas">
+  <h2>Production Gotchas</h2>
+  <p>Things that break in real life. Click to expand.</p>
+
+  <div id="gotchaList">
+    <!-- Built by JS -->
+  </div>
+</section>
+
+<!-- QUIZ -->
+<section id="quiz">
+  <h2>Test Yourself</h2>
+  <div class="quiz-score-bar">
+    <div><span class="score-num" id="quizScore">0</span><span style="color:var(--text-dim)"> / <span id="quizTotal">10</span></span></div>
+    <div class="score-label">Answer all questions to verify mastery</div>
+  </div>
+  <div id="quizContainer">
+    <!-- Built by JS -->
+  </div>
+</section>
+
+<!-- FLASHCARDS -->
+<section id="flash">
+  <h2>Flashcards for Review</h2>
+  <p>Click the card to flip. Use arrows to navigate.</p>
+
+  <div class="flashcard-area">
+    <div class="flashcard" id="flashcard" onclick="flipCard()">
+      <div class="flashcard-face flashcard-front">
+        <div id="flashQ" style="font-size:16px; font-weight:600;"></div>
+        <div class="flashcard-hint">Click to reveal answer</div>
+      </div>
+      <div class="flashcard-face flashcard-back">
+        <div id="flashA" style="font-size:14px;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="flashcard-nav">
+    <button class="sim-btn" onclick="prevCard()">Prev</button>
+    <span id="flashCount" style="padding:8px 12px; color:var(--text-dim); font-size:13px;"></span>
+    <button class="sim-btn" onclick="nextCard()">Next</button>
+  </div>
+</section>
+
+<!-- INTERVIEW CHEAT SHEET -->
+<section>
+  <h2>Interview Cheat Sheet</h2>
+  <div class="card" style="border-left:3px solid var(--accent)">
+    <p><strong>1.</strong> "We need to distribute traffic across N servers for availability and throughput."</p>
+    <p><strong>2.</strong> "I'd use an <strong>L7 LB</strong> (NGINX/ALB) for URL-based routing and SSL termination."</p>
+    <p><strong>3.</strong> "Algorithm: <strong>least connections</strong> as default. Consistent hashing for caches."</p>
+    <p><strong>4.</strong> "HTTP health checks against /health every 10s. 3 failures = unhealthy."</p>
+    <p><strong>5.</strong> "Connection draining for 30s during deploys."</p>
+    <p><strong>6.</strong> "At massive scale: <strong>two-tier</strong> -- L4 front, L7 behind."</p>
+    <p style="margin-top:12px"><strong style="color:var(--accent)">Bonus:</strong> Consistent hashing, circuit breaking, X-Forwarded-For.</p>
+  </div>
+</section>
+
+</div>
+
+<script>
+// ============ TABS ============
+function showTab(cls, idx, btn) {
+  const tabs = document.querySelectorAll('.tab-content.' + cls);
+  tabs.forEach((t, i) => t.classList.toggle('active', i === idx));
+  btn.parentElement.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+// ============ PROGRESS BAR ============
+window.addEventListener('scroll', () => {
+  const h = document.documentElement;
+  const pct = (h.scrollTop / (h.scrollHeight - h.clientHeight)) * 100;
+  document.getElementById('progressBar').style.width = pct + '%';
+});
+
+// ============ SIMULATOR ============
+let simMode = 'l4';
+let packetAnimId = null;
+
+function startSim(mode) {
+  simMode = mode;
+  document.getElementById('simL4Btn').classList.toggle('active', mode === 'l4');
+  document.getElementById('simL7Btn').classList.toggle('active', mode === 'l7');
+  renderSim();
+}
+
+function renderSim() {
+  const c = document.getElementById('simCanvas');
+  c.innerHTML = '';
+
+  // Client
+  const client = mkNode(c, 'CLIENT', '1.2.3.4', 'node-client', 5, 42);
+  // LB
+  const lbLabel = simMode === 'l4' ? 'L4 LB' : 'L7 LB';
+  const lbSub = simMode === 'l4' ? 'TCP only' : 'HTTP aware';
+  const lb = mkNode(c, lbLabel, lbSub, 'node-lb', 38, 42);
+  // Servers
+  mkNode(c, 'Server A', ':8080', 'node-server', 72, 15);
+  mkNode(c, 'Server B', ':8080', 'node-server', 72, 42);
+  mkNode(c, 'Server C', ':8080', 'node-server', 72, 69);
+
+  // Info
+  const info = document.createElement('div');
+  info.className = 'packet-info';
+  info.id = 'simInfo';
+  info.textContent = simMode === 'l4'
+    ? 'L4: Routes by IP+Port. Click "Send Request" to see it in action.'
+    : 'L7: Reads URL/headers. Click "Send Request" to see content-based routing.';
+  c.appendChild(info);
+}
+
+function mkNode(parent, label, sub, cls, leftPct, topPct) {
+  const d = document.createElement('div');
+  d.className = 'node ' + cls;
+  d.style.left = leftPct + '%';
+  d.style.top = topPct + '%';
+  d.style.transform = 'translate(-50%, -50%)';
+  d.innerHTML = `<span>${label}</span><span class="node-label">${sub}</span>`;
+  parent.appendChild(d);
+  return d;
+}
+
+function sendPacket() {
+  const c = document.getElementById('simCanvas');
+  const info = document.getElementById('simInfo');
+
+  // Create packet
+  const pkt = document.createElement('div');
+  pkt.className = 'packet packet-request';
+  pkt.style.left = '8%';
+  pkt.style.top = '45%';
+  c.appendChild(pkt);
+
+  const serverIdx = Math.floor(Math.random() * 3);
+  const serverTops = [15, 42, 69];
+  const serverNames = ['Server A', 'Server B', 'Server C'];
+  const paths = ['/api/payments', '/api/merchants', '/api/reports'];
+
+  if (simMode === 'l4') {
+    info.textContent = `L4: Packet arrives. Sees src=1.2.3.4:50000 dst=10.0.0.1:80\n     Picks ${serverNames[serverIdx]} (round robin). Doesn't know URL.`;
+  } else {
+    info.textContent = `L7: Reads HTTP: GET ${paths[serverIdx]} HTTP/1.1\n     Routes to ${serverNames[serverIdx]} based on URL path.`;
+  }
+
+  // Animate: client -> LB
+  animatePacket(pkt, 8, 45, 40, 45, 600, () => {
+    if (simMode === 'l7') {
+      pkt.style.background = '#7c3aed';
+      pkt.style.boxShadow = '0 0 8px #7c3aed';
+    }
+    // LB -> Server
+    animatePacket(pkt, 40, 45, 74, serverTops[serverIdx], 500, () => {
+      pkt.style.background = '#ec4899';
+      pkt.style.boxShadow = '0 0 8px #ec4899';
+
+      if (simMode === 'l4') {
+        // Response back through LB
+        animatePacket(pkt, 74, serverTops[serverIdx], 40, 45, 400, () => {
+          animatePacket(pkt, 40, 45, 8, 45, 400, () => {
+            info.textContent += '\n     Response returns through LB (NAT mode).';
+            setTimeout(() => pkt.remove(), 500);
+          });
+        });
+      } else {
+        // Response back through LB (L7 also proxies response)
+        animatePacket(pkt, 74, serverTops[serverIdx], 40, 45, 400, () => {
+          animatePacket(pkt, 40, 45, 8, 45, 400, () => {
+            info.textContent += '\n     Response proxied through LB. Headers modified.';
+            setTimeout(() => pkt.remove(), 500);
+          });
+        });
+      }
+    });
+  });
+}
+
+function animatePacket(el, x1, y1, x2, y2, dur, cb) {
+  const start = performance.now();
+  el.style.left = x1 + '%';
+  el.style.top = y1 + '%';
+
+  function step(now) {
+    const t = Math.min((now - start) / dur, 1);
+    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+    el.style.left = (x1 + (x2-x1)*ease) + '%';
+    el.style.top = (y1 + (y2-y1)*ease) + '%';
+    if (t < 1) requestAnimationFrame(step);
+    else if (cb) cb();
+  }
+  requestAnimationFrame(step);
+}
+
+renderSim();
+
+// ============ ALGORITHM VISUALIZER ============
+let currentAlgo = 'rr';
+let rrIndex = 0;
+let servers = [
+  { name: 'Server A', conns: 0, weight: 5, maxConns: 20 },
+  { name: 'Server B', conns: 0, weight: 2, maxConns: 20 },
+  { name: 'Server C', conns: 0, weight: 1, maxConns: 20 },
+];
+let reqCount = 0;
+let wrrAccum = [0, 0, 0];
+
+function setAlgo(algo, btn) {
+  currentAlgo = algo;
+  document.querySelectorAll('#algo .sim-controls .sim-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  resetAlgo();
+}
+
+function resetAlgo() {
+  servers.forEach(s => s.conns = 0);
+  rrIndex = 0; reqCount = 0; wrrAccum = [0,0,0];
+  document.getElementById('algoLog').innerHTML = '';
+  renderAlgo(-1);
+}
+
+function renderAlgo(highlight) {
+  const viz = document.getElementById('algoViz');
+  viz.innerHTML = '';
+  servers.forEach((s, i) => {
+    const box = document.createElement('div');
+    box.className = 'server-box' + (i === highlight ? ' highlight' : '');
+    const pct = Math.min((s.conns / s.maxConns) * 100, 100);
+    box.innerHTML = `
+      <div class="server-name">${s.name}</div>
+      <div style="font-size:10px;color:var(--text-dim)">${currentAlgo === 'wrr' ? 'weight: ' + s.weight : ''}</div>
+      <div class="server-conns">${s.conns}</div>
+      <div style="font-size:10px;color:var(--text-dim)">connections</div>
+      <div class="server-bar"><div class="server-bar-fill" style="width:${pct}%"></div></div>
+    `;
+    viz.appendChild(box);
+  });
+}
+
+function sendAlgoReq() {
+  reqCount++;
+  let target = 0;
+  const clientIP = `192.168.1.${Math.floor(Math.random()*255)}`;
+
+  switch (currentAlgo) {
+    case 'rr':
+      target = rrIndex % 3;
+      rrIndex++;
+      break;
+    case 'wrr':
+      // Weighted: pick server with highest deficit
+      const totalW = servers.reduce((a,s) => a + s.weight, 0);
+      servers.forEach((s,i) => wrrAccum[i] += s.weight);
+      target = wrrAccum.indexOf(Math.max(...wrrAccum));
+      wrrAccum[target] -= totalW;
+      break;
+    case 'lc':
+      target = servers.reduce((min, s, i) => s.conns < servers[min].conns ? i : min, 0);
+      break;
+    case 'hash':
+      let h = 0;
+      for (let c of clientIP) h = ((h << 5) - h + c.charCodeAt(0)) | 0;
+      target = Math.abs(h) % 3;
+      break;
+  }
+
+  servers[target].conns++;
+  renderAlgo(target);
+
+  const log = document.getElementById('algoLog');
+  const algoNames = { rr: 'Round Robin', wrr: 'Weighted RR', lc: 'Least Conn', hash: 'IP Hash' };
+  const reasons = {
+    rr: `next in cycle (index ${rrIndex - 1})`,
+    wrr: `weight=${servers[target].weight} (highest deficit)`,
+    lc: `only ${servers[target].conns - 1} conns (fewest)`,
+    hash: `hash("${clientIP}") % 3 = ${target}`,
+  };
+  log.innerHTML += `<span style="color:var(--text-dim)">Req #${reqCount}</span> [${algoNames[currentAlgo]}] ` +
+    `<span style="color:var(--accent)">${servers[target].name}</span> -- ${reasons[currentAlgo]}\n`;
+  log.scrollTop = log.scrollHeight;
+
+  // Simulate connection finishing
+  setTimeout(() => {
+    if (servers[target].conns > 0 && currentAlgo === 'lc') {
+      servers[target].conns = Math.max(0, servers[target].conns - 1);
+      renderAlgo(-1);
+    }
+  }, 2000 + Math.random() * 3000);
+}
+
+renderAlgo(-1);
+
+// ============ SCENARIOS ============
+const scenarios = [
+  { title: 'MySQL Read Replicas', desc: 'Load-balance database read traffic across 3 replicas.',
+    answer: 'L4', reason: 'MySQL speaks TCP, not HTTP. L7 can\'t understand the MySQL protocol. Use L4 with least connections.' },
+  { title: 'Microservice API Gateway', desc: 'Route /users to user-service and /payments to payment-service.',
+    answer: 'L7', reason: 'You need URL-based routing, which requires reading the HTTP request. L7\'s killer feature.' },
+  { title: 'Redis Cluster', desc: 'Distribute cache reads across Redis nodes.',
+    answer: 'L4', reason: 'Redis uses a custom TCP protocol. L7 can\'t parse it. L4 with consistent hashing maximizes cache hits.' },
+  { title: 'Canary Deployment', desc: 'Send 5% of traffic to new version, 95% to stable.',
+    answer: 'L7', reason: 'L7 can split traffic by weight and even by specific headers (X-Canary: true). L4 can\'t do percentage-based splitting.' },
+  { title: 'Gaming Server (UDP)', desc: 'Route real-time game traffic with minimal latency.',
+    answer: 'L4', reason: 'Gaming uses UDP for low latency. L7 only works with HTTP/TCP. L4 adds microseconds, L7 adds milliseconds.' },
+  { title: 'Rate-limit per Merchant API Key', desc: 'Throttle each merchant to 100 req/sec to your payment API.',
+    answer: 'L7', reason: 'L7 can read the API key from the request header and enforce per-key rate limits. L4 doesn\'t see headers.' },
+];
+
+function renderScenarios() {
+  const grid = document.getElementById('scenarioGrid');
+  grid.innerHTML = '';
+  scenarios.forEach((s, i) => {
+    const card = document.createElement('div');
+    card.className = 'scenario-card';
+    card.innerHTML = `<div class="scenario-title">${s.title}</div><div class="scenario-desc">${s.desc}</div>`;
+    card.onclick = () => showScenario(i, card);
+    grid.appendChild(card);
+  });
+}
+
+function showScenario(i, el) {
+  document.querySelectorAll('.scenario-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  const s = scenarios[i];
+  const ans = document.getElementById('scenarioAnswer');
+  const color = s.answer === 'L4' ? 'var(--l4)' : 'var(--l7)';
+  ans.innerHTML = `<strong style="color:${color}">Use ${s.answer}</strong><br><br>${s.reason}`;
+  ans.classList.add('visible');
+}
+
+renderScenarios();
+
+// ============ GOTCHAS ============
+const gotchas = [
+  { title: '1. Thundering Herd After Server Returns', body: 'Server goes down, comes back, LB floods it with traffic. It crashes again.<br><br><span class="fix-tag">FIX</span> Slow start / warm-up. Gradually increase traffic over 30-60 seconds.' },
+  { title: '2. Connection Draining During Deploys', body: 'You kill an old server, but it has 500 active connections. All 500 requests fail.<br><br><span class="fix-tag">FIX</span> Connection draining. Stop NEW connections, let EXISTING ones finish. HAProxy: "drain mode". AWS: "deregistration delay".' },
+  { title: '3. The Keep-Alive Trap (L7)', body: 'HTTP keep-alive pins multiple requests to one backend. That backend gets overloaded.<br><br><span class="fix-tag">FIX</span> L7 LBs re-route individual requests within a keep-alive connection. NGINX does this by default.' },
+  { title: '4. Health Check False Positives', body: '/health returns 200 but the app can\'t process payments (acquirer pool exhausted).<br><br><span class="fix-tag">FIX</span> /health/shallow (am I running?) for LB. /health/deep (can I process requests?) for monitoring. Don\'t make LB check too deep or it becomes slow.' },
+  { title: '5. Source IP Preservation', body: 'With L7, backend sees the LB\'s IP, not the client\'s. Breaks fraud detection.<br><br><span class="fix-tag">FIX</span> L7 sets X-Forwarded-For header. Your app MUST read it for the real client IP.' },
+  { title: '6. WebSocket Idle Timeout', body: 'LB has 60-second idle timeout. Kills WebSocket connections that are open but quiet.<br><br><span class="fix-tag">FIX</span> Configure LB idle timeout to match WebSocket needs. AWS ALB: up to 4000 seconds.' },
+];
+
+function renderGotchas() {
+  const list = document.getElementById('gotchaList');
+  gotchas.forEach((g, i) => {
+    const div = document.createElement('div');
+    div.className = 'gotcha';
+    div.innerHTML = `
+      <div class="gotcha-header" onclick="this.parentElement.classList.toggle('open')">
+        ${g.title} <span class="gotcha-arrow">&#9660;</span>
+      </div>
+      <div class="gotcha-body">${g.body}</div>
+    `;
+    list.appendChild(div);
+  });
+}
+renderGotchas();
+
+// ============ QUIZ ============
+const questions = [
+  { q: 'What 4 values does an L4 LB use for routing?',
+    opts: ['URL, headers, cookies, body', 'Src IP, Dst IP, Src Port, Dst Port', 'SSL cert, hostname, method, path', 'MAC address, VLAN, TTL, checksum'],
+    correct: 1, explain: 'L4 operates at the transport layer. It only sees the TCP/IP header: source IP, destination IP, source port, destination port.' },
+  { q: 'Why can\'t L4 route by URL path?',
+    opts: ['It\'s too slow to parse URLs', 'URLs are encrypted in TCP headers', 'URL is inside the HTTP payload which L4 never reads', 'L4 doesn\'t support HTTP protocol'],
+    correct: 2, explain: 'L4 only reads the TCP header (4-tuple). The URL is inside the TCP payload (the HTTP request), which L4 never inspects.' },
+  { q: 'What is DSR (Direct Server Return)?',
+    opts: ['Server sends response directly to client, bypassing the LB', 'LB encrypts the response before sending', 'Backend connects directly to the database', 'DNS resolves directly to the server'],
+    correct: 0, explain: 'In DSR, the LB only handles inbound requests. Responses (10-100x larger) go directly from backend to client, saving massive LB bandwidth.' },
+  { q: 'How many TCP connections does an L7 LB maintain per request?',
+    opts: ['One (forwarded)', 'Two (client-to-LB and LB-to-backend)', 'Three (client-LB-backend-DB)', 'Zero (it\'s connectionless)'],
+    correct: 1, explain: 'L7 terminates the client connection, then opens a new one to the backend. Two separate TCP connections.' },
+  { q: 'Which is the default algorithm for most production systems?',
+    opts: ['Round Robin', 'Consistent Hashing', 'Least Connections', 'Random'],
+    correct: 2, explain: 'Least Connections adapts to variable request costs. Slow requests keep connections open, so that server gets fewer new ones.' },
+  { q: 'When would you use Consistent Hashing?',
+    opts: ['For SSL termination', 'When servers have different capacities', 'For cache affinity (same key hits same server)', 'For WebSocket connections'],
+    correct: 2, explain: 'Consistent hashing ensures the same key always hits the same server. When a server dies, only nearby keys redistribute.' },
+  { q: 'What is connection draining?',
+    opts: ['Removing all database connections', 'Stopping new connections while existing ones finish', 'Draining the LB\'s memory buffer', 'Closing SSL sessions'],
+    correct: 1, explain: 'During deploys, you stop sending NEW requests to a server but let existing in-flight requests complete gracefully.' },
+  { q: 'How does a backend get the real client IP behind an L7 LB?',
+    opts: ['From the TCP source IP', 'From the X-Forwarded-For header', 'From the SSL certificate', 'From DNS lookup'],
+    correct: 1, explain: 'L7 LBs add the X-Forwarded-For header containing the original client IP. The backend reads this header.' },
+  { q: 'What\'s the advantage of a two-tier (L4 + L7) architecture?',
+    opts: ['It\'s cheaper than using just L7', 'L4 handles millions of conn/sec before L7 does smart routing', 'It eliminates the need for health checks', 'It makes SSL unnecessary'],
+    correct: 1, explain: 'L4 at the front provides a single VIP and distributes across multiple L7 instances. L7 does smart routing. If one L7 dies, L4 reroutes.' },
+  { q: 'Which LB type can load-balance Redis or Kafka?',
+    opts: ['L7 only', 'L4 only', 'Both equally', 'Neither -- they don\'t need LBs'],
+    correct: 1, explain: 'Redis and Kafka use custom TCP protocols. L7 only understands HTTP/gRPC. L4 is protocol-agnostic and handles any TCP/UDP traffic.' },
+];
+
+let quizAnswered = 0;
+let quizCorrect = 0;
+
+function renderQuiz() {
+  const container = document.getElementById('quizContainer');
+  questions.forEach((q, qi) => {
+    const card = document.createElement('div');
+    card.className = 'quiz-card';
+    let optsHtml = q.opts.map((o, oi) =>
+      `<button class="quiz-opt" onclick="answerQuiz(${qi}, ${oi}, this)">${o}</button>`
+    ).join('');
+    card.innerHTML = `
+      <div class="quiz-q">${qi + 1}. ${q.q}</div>
+      <div class="quiz-options">${optsHtml}</div>
+      <div class="quiz-explanation" id="quizExp${qi}">${q.explain}</div>
+    `;
+    container.appendChild(card);
+  });
+  document.getElementById('quizTotal').textContent = questions.length;
+}
+
+function answerQuiz(qi, oi, btn) {
+  const q = questions[qi];
+  const card = btn.closest('.quiz-card');
+  const opts = card.querySelectorAll('.quiz-opt');
+
+  if (opts[0].classList.contains('disabled')) return;
+
+  opts.forEach((o, i) => {
+    o.classList.add('disabled');
+    if (i === q.correct) o.classList.add('correct');
+    if (i === oi && i !== q.correct) o.classList.add('wrong');
+  });
+
+  if (oi === q.correct) quizCorrect++;
+  quizAnswered++;
+  document.getElementById('quizScore').textContent = quizCorrect;
+  document.getElementById('quizExp' + qi).style.display = 'block';
+}
+
+renderQuiz();
+
+// ============ FLASHCARDS ============
+const flashcards = [
+  { q: 'What does an L4 LB see?', a: 'Only the TCP/IP header: Source IP, Destination IP, Source Port, Destination Port. Never inspects packet contents.' },
+  { q: 'What does an L7 LB see?', a: 'Full HTTP request: URL path, headers, cookies, method, body. Plus everything L4 sees.' },
+  { q: 'What is DSR?', a: 'Direct Server Return. Backend responds directly to client, bypassing LB. Saves bandwidth since responses are 10-100x bigger than requests.' },
+  { q: 'L4 or L7 for MySQL?', a: 'L4. MySQL uses a custom TCP protocol that L7 can\'t understand. L4 is protocol-agnostic.' },
+  { q: 'Default LB algorithm?', a: 'Least Connections. Handles variable request costs automatically. Use consistent hashing for caches.' },
+  { q: 'What is connection draining?', a: 'During deploys: stop NEW connections to a server, let EXISTING ones finish. Prevents in-flight request failures.' },
+  { q: 'How does SSL termination work?', a: 'L7 LB holds the cert, decrypts HTTPS from client, forwards plaintext HTTP to backend. One place for cert management.' },
+  { q: 'What is X-Forwarded-For?', a: 'HTTP header added by L7 LB containing the client\'s real IP. Without it, backend only sees the LB\'s IP.' },
+  { q: 'What is circuit breaking?', a: 'If a backend fails N times in T seconds, stop sending traffic for a cooldown period. Prevents cascading failures and retry storms.' },
+  { q: 'Two-tier architecture?', a: 'L4 at front (single VIP, millions conn/sec) distributing to multiple L7 instances (smart routing, SSL). No single point of failure.' },
+];
+
+let flashIdx = 0;
+
+function renderCard() {
+  const fc = document.getElementById('flashcard');
+  fc.classList.remove('flipped');
+  document.getElementById('flashQ').textContent = flashcards[flashIdx].q;
+  document.getElementById('flashA').textContent = flashcards[flashIdx].a;
+  document.getElementById('flashCount').textContent = `${flashIdx + 1} / ${flashcards.length}`;
+}
+
+function flipCard() { document.getElementById('flashcard').classList.toggle('flipped'); }
+function nextCard() { flashIdx = (flashIdx + 1) % flashcards.length; renderCard(); }
+function prevCard() { flashIdx = (flashIdx - 1 + flashcards.length) % flashcards.length; renderCard(); }
+
+renderCard();
+</script>
+</body>
+</html>
